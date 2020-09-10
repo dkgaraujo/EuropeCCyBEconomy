@@ -1,0 +1,214 @@
+---
+title: "CCyB in Europe (work in progress)"
+output:
+  html_document:
+    df_print: paged
+  word_document: default
+  html_notebook: 
+    toc: yes
+    number_sections: yes
+---
+
+```{r Load packages, message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(data.table)
+library(readxl)
+library(plotly)
+library(padr)
+```
+
+# Country-level CCyB rates
+```{r Gets CCyB time series, message=FALSE, warning=FALSE}
+download.file("https://www.esrb.europa.eu/national_policy/ccb/shared/data/esrb.ccybd_CCyB_data.xlsx", destfile = "esrb.ccybd_CCyB_data.xlsx")
+ESRB_CCyB <- read_excel("~/Downloads/esrb.ccybd_CCyB_data.xlsx") %>%
+  mutate(decision_date = as.Date(`Decision on`, format = "%Y-%m-%d"),
+         reference_date = as.Date(`Reference date`, format = "%Y-%m-%d"),
+         announcement_date = as.Date(`Date of Announcement`, format = "%Y-%m-%d"),
+         application_date = as.Date(`Application since`, format = "%Y-%m-%d"),
+         CCyB_rate = as.numeric(`CCyB rate`),
+         credit_gdp_ratio = as.numeric(`Credit-to-GDP`),
+         credit_gdp_gap = as.numeric(`Credit Gap`)) %>% 
+  select(Country, decision_date, announcement_date, application_date, reference_date, CCyB_rate, credit_gdp_ratio, credit_gdp_gap)
+
+date_range <- ESRB_CCyB %>%
+  select(contains("_date")) %>%
+  as.matrix(ncol = 1) %>%
+  range() %>%
+  as.Date(format = "%Y-%m-%d")
+
+ESRB_CCyB <- ESRB_CCyB %>% 
+  group_by(Country) %>% 
+  nest()
+
+CCyB_over_time <- function(ccyb_df, pad_by) {
+  ccyb_df %>% 
+    data.frame() %>% 
+    pad(by = pad_by, interval = "day") %>% 
+    tidyr::fill(CCyB_rate)
+}
+
+ESRB_CCyB <- ESRB_CCyB %>% 
+  mutate(
+    CCyB_decision = data %>% map(~ CCyB_over_time(., "decision_date")),
+    CCyB_announcement = data %>% map(~ CCyB_over_time(., "announcement_date")),
+    CCyB_application= data %>% map(~ CCyB_over_time(., "application_date"))
+  )
+```
+
+
+
+```{r Overview of countries with positive CCyB - announcement date}
+chart_ann_date <- ESRB_CCyB %>% 
+  unnest(CCyB_announcement) %>% 
+  group_by(Country) %>% 
+  mutate(nonzero_CCyB = sum(CCyB_rate) > 0) %>% 
+  filter(nonzero_CCyB == TRUE) %>% 
+  ggplot(aes(x = announcement_date, y = CCyB_rate, color = Country)) +
+  geom_line() +
+  labs(title = "CCyB rate by annoucement date",
+       subtitle = "European countries that have activated CCyB at some point") +
+  xlab("Announcement date") +
+  ylab("CCyB rate (%)") +
+  theme(legend.position = "bottom")
+
+ggplotly(chart_ann_date)
+
+```
+
+
+```{r Overview of countries with positive CCyB - application date}
+chart_app_date <- ESRB_CCyB %>% 
+  unnest(CCyB_application) %>% 
+  group_by(Country) %>% 
+  mutate(nonzero_CCyB = sum(CCyB_rate) > 0) %>% 
+  filter(nonzero_CCyB == TRUE) %>% 
+  ggplot(aes(x = application_date, y = CCyB_rate, color = Country)) +
+  geom_line() +
+  labs(title = "CCyB rate by application date",
+       subtitle = "European countries that have activated CCyB at some point") +
+  xlab("Application date") +
+  ylab("CCyB rate (%)") +
+  geom_vline(xintercept = Sys.Date(), linetype = "twodash", color = "blue", size = 1.3) +
+  theme(legend.position = "bottom")
+ggplotly(chart_app_date)
+```
+
+# Oxford Coronavirus Government Response Tracker
+
+Explanations found in the dataset's [codebook](https://github.com/OxCGRT/covid-policy-tracker/blob/master/documentation/codebook.md), under "E2, debt/contract relief".
+
+The metric below aims to capture both the duration and (roughly) the intensity of the debt/contract relief provided in each jurisdiction. It's not the same as what we wanted (details are in the document linked above), but that's what I found so far in an organised way.
+
+```{r}
+debt_relief <- read.csv("https://github.com/OxCGRT/covid-policy-tracker/raw/master/data/timeseries/e2_debtcontractrelief.csv",
+                        na.strings = ".")
+
+CCyB_countries <- unique(ESRB_CCyB$Country)
+debt_relief <- debt_relief %>% filter(X %in% CCyB_countries) %>% select(-X.1)
+
+debt_relief <- tibble(Country = debt_relief$X,
+                      Debt_relief = debt_relief %>% select(-X) %>% rowSums(na.rm = TRUE))
+
+debt_relief_plot <- debt_relief %>% 
+  ggplot(aes(x = reorder(Country, -Debt_relief), y = Debt_relief)) +
+  geom_bar(stat = "identity") +
+  ggtitle("Debt relief measures by country in the sample") +
+  ylab("Debt relief score") +
+  xlab(element_blank()) +
+  theme(axis.text.x=element_text(size = rel(0.7))) +
+  scale_x_discrete(labels = function(labels) {
+    sapply(seq_along(labels), function(i) paste0(ifelse(i %% 2 == 0, '', '\n'), labels[i]))
+  })
+
+debt_relief_plot
+```
+
+
+# Google Mobility
+```{r Loads Google Mobility data}
+if(!file.exists("Global_Mobility_Report.csv")) {
+  download.file("https://www.gstatic.com/covid19/mobility/Global_Mobility_Report.csv",
+                destfile = "Global_Mobility_Report.csv")
+}
+
+GoogleMobilityDataset <- data.table(read.csv("Global_Mobility_Report.csv",
+                                             stringsAsFactors = FALSE))
+
+european_countries <- c("AT", # Austria
+                        "BA", # Bosnia and Hezegovina
+                        "BE", #  Belgium
+                        "BG", # Bulgaria
+                        "BY", # Belarus
+                        "CH", # Switzerland
+                        "CZ", # Czechia
+                        "DE", # Germany
+                        "DK", # Denmark
+                        "EE", # Estonia
+                        "ES", # Spain
+                        "FI", # Finland
+                        "FR", # France
+                        "GB", # United Kingdom
+                        "GE", # Georgia
+                        "GR", # Greece
+                        "HR", # Croatia
+                        "HU", # Hungary
+                        "IE", # Ireland
+                        "IT", # Italy
+                        "LI", # Liechtenstein
+                        "LT", # Lithuania
+                        "LU", # Luxembourg
+                        "LV", # Latvia
+                        "MD", # Moldova
+                        "MK", # North Macedonia
+                        "MT", # Malta
+                        "NL", # Netherlands
+                        "NO", # Norway
+                        "PL", # Poland
+                        "PT", # Portugal
+                        "RO", # Romania
+                        "RS", # Serbia
+                        "RU", # Russia
+                        "SE", # Sweden
+                        "SI", # Slovenia
+                        "SK", # Slovakia
+                        "UA") # Ukraine
+GoogleMobilityDataset <- GoogleMobilityDataset[country_region_code %in% european_countries & sub_region_1 == "",]
+GoogleMobilityDataset[, date := as.POSIXct(paste0(date, " 00:00:00"))]
+GoogleMobilityDataset <- GoogleMobilityDataset %>% 
+  select(country_region, 
+         date, 
+         retail_and_recreation_percent_change_from_baseline,
+         grocery_and_pharmacy_percent_change_from_baseline,
+         parks_percent_change_from_baseline,
+         transit_stations_percent_change_from_baseline,
+         workplaces_percent_change_from_baseline,
+         residential_percent_change_from_baseline) %>% 
+  group_by(country_region) %>% 
+  nest()
+
+GoogleMobilityDataset <- GoogleMobilityDataset %>% 
+  mutate(data = data %>% map(~ pivot_longer(.x, !date, names_to = "mobility_category", values_to = "change_from_baseline")))
+
+```
+
+
+Now let's plot the mobility graph for each country.
+
+```{r Google mobility country plots}
+mobility_plot <- function(country, country_data) {
+  ggplot(data = country_data, aes(x = date, y = change_from_baseline, color = mobility_category)) +
+    geom_line() +
+    ggtitle(label = country) +
+    theme(legend.position = "bottom",
+          legend.text = element_text(size = rel(0.5)),
+          legend.title = element_text(size = rel(0.7))) +
+    ylab("Change from baseline (%)") +
+    xlab("Time")
+}
+
+map2(GoogleMobilityDataset$country_region, GoogleMobilityDataset$data, ~ mobility_plot(.x, .y))
+```
+
+
+
+
